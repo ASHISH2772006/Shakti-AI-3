@@ -5,6 +5,7 @@
     <!-- Internet & Network Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <!-- Audio Permissions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -13,6 +14,7 @@
     <!-- Location Permissions -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <!-- Camera Permission -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -29,6 +31,29 @@
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
+    <!-- BLE Permissions for Mesh Network -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Foreground Service Permission (Android 9+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+
+    <!-- Wake Lock for Background Operation -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Vibration for Alerts -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Body Sensors (IMU) -->
+    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+
     <!-- Features -->
     <uses-feature
         android:name="android.hardware.telephony"
@@ -44,6 +69,12 @@
         android:required="false" />
     <uses-feature
         android:name="android.hardware.sensor.accelerometer"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.sensor.gyroscope"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
         android:required="false" />
 
     <application
@@ -72,6 +103,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- RunAnywhere Digital Bodyguard Service -->
+        <service
+            android:name=".runanywhere.DigitalBodyguardService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone|location|camera" />
+
+        <!-- BLE Mesh Network Service -->
+        <service
+            android:name=".runanywhere.BLEMeshService"
+            android:enabled="true"
+            android:exported="false" />
+
     </application>
 
 </manifest>
