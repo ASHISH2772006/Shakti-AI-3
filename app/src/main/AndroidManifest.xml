@@ -47,7 +47,9 @@
         android:required="false" />
 
     <application
+        android:name=".ShaktiApplication"
         android:allowBackup="true"
+        android:largeHeap="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"

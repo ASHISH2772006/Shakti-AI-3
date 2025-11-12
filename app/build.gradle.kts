@@ -5,16 +5,17 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.kapt")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "com.shakti.ai"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.shakti.ai"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "3.0"
 
@@ -26,8 +27,11 @@ android {
         if (localPropertiesFile.exists()) {
             localPropertiesFile.inputStream().use { localProperties.load(it) }
         }
-        val geminiApiKey = localProperties.getProperty("GEMINI_API_KEY") ?: ""
+        val geminiApiKey = localProperties.getProperty("GEMINI_API_KEY", "")
         buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
+
+        // Enable vector drawable support
+        vectorDrawables.useSupportLibrary = true
     }
 
     buildTypes {
@@ -41,13 +45,13 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
     }
 
     buildFeatures {
@@ -56,13 +60,25 @@ android {
         compose = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.4"
-    }
-
     lint {
         abortOnError = false
         checkReleaseBuilds = false
+    }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/license.txt",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt",
+                "META-INF/notice.txt",
+                "META-INF/ASL2.0",
+                "META-INF/*.kotlin_module"
+            )
+        }
     }
 }
 
@@ -92,7 +108,23 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
-    // ============ GEMINI API ============
+    // ============ RUNANYWHERE SDK ============
+    // RunAnywhere SDK - Core (v0.1.3-alpha) - Local AAR
+    implementation(files("libs/RunAnywhereKotlinSDK-release.aar"))
+
+    // RunAnywhere SDK - LLM Module (includes llama.cpp with 7 ARM64 CPU variants) - Local AAR
+    implementation(files("libs/runanywhere-llm-llamacpp-release.aar"))
+
+    // Required dependencies for RunAnywhere SDK
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.4.1")
+    implementation("io.ktor:ktor-client-core:2.3.7")
+    implementation("io.ktor:ktor-client-okhttp:2.3.7")
+    implementation("io.ktor:ktor-client-content-negotiation:2.3.7")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.7")
+    implementation("com.squareup.okio:okio:3.7.0")
+
+    // ============ GEMINI API (Fallback) ============
     // Latest Gemini SDK for Android
     implementation("com.google.ai.client.generativeai:generativeai:0.2.0")
 
