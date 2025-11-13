@@ -44,11 +44,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
 
+    <!-- Boot and Auto-Start Permissions -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Wake Lock for Background Operation -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Vibration for Alerts -->
     <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- System Alert Window (For Emergency Overlay) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- Body Sensors (IMU) -->
     <uses-permission android:name="android.permission.BODY_SENSORS" />
@@ -104,16 +111,65 @@
             </intent-filter>
         </activity>
 
+        <!-- Stealth Calculator Mode (Hidden Bodyguard) -->
+        <activity
+            android:name=".stealth.StealthCalculatorActivity"
+            android:exported="true"
+            android:label="Calculator"
+            android:theme="@style/Theme.ShaktiAI3"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Allow opening as calculator -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Emergency Camera Activity (Auto-start recording) -->
+        <activity
+            android:name=".stealth.EmergencyCameraActivity"
+            android:exported="false"
+            android:label="Emergency Camera"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:screenOrientation="portrait"
+            android:launchMode="singleTop" />
+
+        <!-- Boot Receiver (Auto-start service on boot) -->
+        <receiver
+            android:name=".stealth.BootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Stealth Trigger Service (Background Audio Monitoring) -->
+        <service
+            android:name=".stealth.StealthTriggerService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- RunAnywhere Digital Bodyguard Service -->
         <service
             android:name=".runanywhere.DigitalBodyguardService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="microphone|location|camera" />
-
-        <!-- BLE Mesh Network Service -->
+        <!-- Emergency Overlay Service -->
         <service
-            android:name=".runanywhere.BLEMeshService"
+            android:name=".EmergencyOverlayService"
             android:enabled="true"
             android:exported="false" />
 

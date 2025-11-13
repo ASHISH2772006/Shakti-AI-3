@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.cardview.widget.CardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="16dp"
+    app:cardBackgroundColor="#D32F2F"
+    app:cardCornerRadius="12dp"
+    app:cardElevation="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <!-- Emergency Header -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🚨 EMERGENCY ACTIVE"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="@color/white"
+            android:gravity="center"
+            android:paddingBottom="12dp" />
+
+        <!-- Pulsing Recording Indicator -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:paddingBottom="16dp">
+
+            <View
+                android:layout_width="12dp"
+                android:layout_height="12dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/pulsing_red_dot" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="RECORDING IN PROGRESS"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="@color/white" />
+        </LinearLayout>
+
+        <!-- Evidence ID -->
+        <TextView
+            android:id="@+id/evidence_id_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Evidence ID: EVIDENCE_123456789"
+            android:textSize="12sp"
+            android:textColor="@color/white"
+            android:paddingBottom="4dp"
+            android:fontFamily="monospace" />
+
+        <!-- Trigger Type -->
+        <TextView
+            android:id="@+id/trigger_type_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Trigger: VOICE_HELP"
+            android:textSize="12sp"
+            android:textColor="@color/white"
+            android:paddingBottom="4dp" />
+
+        <!-- Location -->
+        <TextView
+            android:id="@+id/location_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Location: 37.7749, -122.4194"
+            android:textSize="12sp"
+            android:textColor="@color/white"
+            android:paddingBottom="16dp" />
+
+        <!-- Divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/white"
+            android:alpha="0.3"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Info Text -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Audio and video recording active\nEmergency contacts notified\nEvidence being secured"
+            android:textSize="11sp"
+            android:textColor="@color/white"
+            android:alpha="0.9"
+            android:lineSpacingExtra="4dp"
+            android:paddingBottom="16dp" />
+
+        <!-- Action Buttons -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:weightSum="3">
+
+            <!-- Open App Button -->
+            <Button
+                android:id="@+id/btn_open_app"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:text="Open App"
+                android:textSize="11sp"
+                android:textColor="@color/white"
+                android:backgroundTint="#1976D2"
+                android:padding="10dp" />
+
+            <!-- Stop Recording Button -->
+            <Button
+                android:id="@+id/btn_stop_recording"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:text="Stop"
+                android:textSize="11sp"
+                android:textColor="@color/white"
+                android:backgroundTint="#E64A19"
+                android:padding="10dp" />
+
+            <!-- Dismiss Button -->
+            <Button
+                android:id="@+id/btn_dismiss"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:text="Dismiss"
+                android:textSize="11sp"
+                android:textColor="@color/white"
+                android:backgroundTint="#757575"
+                android:padding="10dp" />
+        </LinearLayout>
+
+        <!-- Safety Note -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="This alert will remain visible until dismissed"
+            android:textSize="9sp"
+            android:textColor="@color/white"
+            android:alpha="0.7"
+            android:gravity="center"
+            android:paddingTop="12dp" />
+    </LinearLayout>
+
+</androidx.cardview.widget.CardView>

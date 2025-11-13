@@ -2,19 +2,25 @@ package com.shakti.ai.stealth
 
 import android.content.Context
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.SurfaceTexture
+import android.hardware.Camera
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
+import android.view.Surface
 import androidx.core.app.ActivityCompat
+import com.shakti.ai.EmergencyOverlayService
 import com.shakti.ai.runanywhere.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import org.tensorflow.lite.Interpreter
 import java.io.File
 import java.io.FileInputStream
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
@@ -56,7 +63,7 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
         
         // Detection thresholds
         private const val SCREAM_THRESHOLD = 0.75f
-        private const val VOICE_TRIGGER_THRESHOLD = 0.85f
+        private const val VOICE_TRIGGER_THRESHOLD = 0.65f
         private const val EMERGENCY_THRESHOLD = 0.90f
         
         // Voice trigger settings
@@ -100,16 +107,20 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
     // Audio monitoring
     private var audioRecorder: AudioRecord? = null
     private var isMonitoring = false
-    
-    // Video/audio recording
-    private var videoRecorder: MediaRecorder? = null
+
+    // Audio recording (evidence only - stealth mode)
     private var evidenceAudioRecorder: MediaRecorder? = null
+    private var evidenceVideoRecorder: MediaRecorder? = null
     private var isRecording = false
+    private var isVideoRecording = false
     private var currentEvidenceId: String? = null
+    private var videoSurface: Surface? = null
+    private var camera: Camera? = null
     
     // Managers
     private val evidenceManager = EvidenceManager(context)
     private val blockchainManager = AptosBlockchainManager.getInstance(context)
+    private val emergencyContactsManager = EmergencyContactsManager(context)
     
     // Sensors
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -130,6 +141,25 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
     // Location
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private var currentLocation: Location? = null
+    private var locationUpdateJob: Job? = null
+
+    // Location listener
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            currentLocation = location
+            Log.d(
+                TAG,
+                "Location updated: ${location.latitude}, ${location.longitude} (±${location.accuracy}m)"
+            )
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {
+        }
+
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+    }
     
     // Voice trigger state
     private var helpCount = 0
@@ -153,37 +183,63 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
     private fun loadModels() {
         scope.launch(Dispatchers.IO) {
             try {
-                // Load audio threat classifier (8MB)
-                audioThreatInterpreter = Interpreter(
-                    loadModelFile(AUDIO_THREAT_MODEL),
-                    Interpreter.Options().apply {
-                        setNumThreads(2)
-                        setUseNNAPI(true)
-                    }
-                )
-                Log.i(TAG, "✓ Audio threat model loaded (8MB)")
-                
-                // Load sentiment classifier (119MB)
-                sentimentInterpreter = Interpreter(
-                    loadModelFile(SENTIMENT_MODEL),
-                    Interpreter.Options().apply {
-                        setNumThreads(2)
-                        setUseNNAPI(true)
-                    }
-                )
-                Log.i(TAG, "✓ Sentiment model loaded (119MB)")
-                
+                // Check if model files exist
+                val audioModelExists = try {
+                    context.assets.open(AUDIO_THREAT_MODEL).close()
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+
+                val sentimentModelExists = try {
+                    context.assets.open(SENTIMENT_MODEL).close()
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+
+                if (audioModelExists) {
+                    // Load audio threat classifier (8MB)
+                    audioThreatInterpreter = Interpreter(
+                        loadModelFile(AUDIO_THREAT_MODEL),
+                        Interpreter.Options().apply {
+                            setNumThreads(2)
+                            setUseNNAPI(true)
+                        }
+                    )
+                    Log.i(TAG, "✓ Audio threat model loaded (8MB)")
+                } else {
+                    Log.w(TAG, "⚠ Audio threat model not found - using fallback detection")
+                }
+
+                if (sentimentModelExists) {
+                    // Load sentiment classifier (119MB)
+                    sentimentInterpreter = Interpreter(
+                        loadModelFile(SENTIMENT_MODEL),
+                        Interpreter.Options().apply {
+                            setNumThreads(2)
+                            setUseNNAPI(true)
+                        }
+                    )
+                    Log.i(TAG, "✓ Sentiment model loaded (119MB)")
+                } else {
+                    Log.w(TAG, "⚠ Sentiment model not found - using fallback detection")
+                }
+
                 _stealthState.value = _stealthState.value.copy(
                     modelsLoaded = true,
-                    audioModelSize = 8,
-                    sentimentModelSize = 119
+                    audioModelSize = if (audioModelExists) 8 else 0,
+                    sentimentModelSize = if (sentimentModelExists) 119 else 0
                 )
-                
+
             } catch (e: Exception) {
                 Log.e(TAG, "Error loading models", e)
+                // Still mark as loaded to allow fallback detection
                 _stealthState.value = _stealthState.value.copy(
-                    modelsLoaded = false,
-                    error = "Failed to load models: ${e.message}"
+                    modelsLoaded = true,
+                    audioModelSize = 0,
+                    sentimentModelSize = 0,
+                    error = "Models unavailable - using fallback detection"
                 )
             }
         }
@@ -211,7 +267,6 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
         gyroscope?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
-        // Magnetometer registration only if available (API check done above)
         magnetometer?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
@@ -226,21 +281,21 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
             Log.d(TAG, "Already monitoring")
             return
         }
-        
+
         Log.i(TAG, "🛡️ Starting Stealth Bodyguard monitoring")
-        
+
         isMonitoring = true
         _stealthState.value = _stealthState.value.copy(
             isMonitoring = true,
             startTime = System.currentTimeMillis()
         )
-        
+
         // Start audio monitoring loop
         startAudioMonitoring()
-        
-        // Update location periodically
+
+        // Start location updates
         startLocationUpdates()
-        
+
         Log.i(TAG, "✓ Stealth monitoring active (hidden mode)")
     }
 
@@ -255,7 +310,7 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
                 ) {
                     Log.e(TAG, "AudioRecord permission not granted")
                     _stealthState.value = _stealthState.value.copy(
-                        error = "AudioRecord permission not granted"
+                        error = "Microphone permission required"
                     )
                     return@launch
                 }
@@ -276,7 +331,7 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
 
                 if (audioRecorder?.state == AudioRecord.STATE_INITIALIZED) {
                     audioRecorder?.startRecording()
-                    Log.i(TAG, "Audio monitoring started")
+                    Log.i(TAG, "✓ Audio monitoring started")
 
                     // Continuous audio analysis loop
                     val buffer = ShortArray(BUFFER_SIZE)
@@ -289,9 +344,21 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
                             analyzeAudioFrame(buffer, samplesRead)
                         }
 
+                        // Periodically check and reset helpCount if timeout exceeded
+                        if (helpCount > 0 && System.currentTimeMillis() - lastHelpTimestamp > HELP_TIMEOUT_MS) {
+                            helpCount = 0
+                            _stealthState.value = _stealthState.value.copy(helpCount = 0)
+                            Log.d(TAG, "HELP counter reset due to timeout")
+                        }
+
                         // Small delay to prevent CPU overload
                         delay(AUDIO_FRAME_MS.toLong())
                     }
+                } else {
+                    Log.e(TAG, "Failed to initialize AudioRecord")
+                    _stealthState.value = _stealthState.value.copy(
+                        error = "Failed to initialize audio monitoring"
+                    )
                 }
 
             } catch (e: Exception) {
@@ -308,26 +375,26 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
      */
     private suspend fun analyzeAudioFrame(buffer: ShortArray, length: Int) = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
-        
+
         try {
             // Extract MFCC features
             val mfccFeatures = extractMFCC(buffer, length)
-            
+
             // Run scream detection
-            val screamResult = detectScream(mfccFeatures)
-            
+            val screamResult = detectScream(mfccFeatures, buffer, length)
+
             // Run voice trigger detection
-            val voiceTrigger = detectVoiceTrigger(buffer, length)
-            
+            val voiceTrigger = detectVoiceTrigger(buffer, length, mfccFeatures)
+
             // Check for emergency triggers
             if (screamResult.isScream && screamResult.confidence > SCREAM_THRESHOLD) {
                 handleScreamDetected(screamResult)
             }
-            
+
             if (voiceTrigger.isTriggered) {
                 handleVoiceTrigger(voiceTrigger)
             }
-            
+
             // Update state
             _detectionResult.value = DetectionResult(
                 timestamp = System.currentTimeMillis(),
@@ -337,7 +404,7 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
                 isVoiceTrigger = voiceTrigger.isTriggered,
                 detectionLatency = System.currentTimeMillis() - startTime
             )
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "Error analyzing audio frame", e)
         }
@@ -373,38 +440,38 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
     }
 
     /**
-     * Detect scream using TensorFlow Lite model
+     * Detect scream using TensorFlow Lite model or fallback
      */
-    private fun detectScream(mfccFeatures: FloatArray): ScreamResult {
+    private fun detectScream(
+        mfccFeatures: FloatArray,
+        buffer: ShortArray,
+        length: Int
+    ): ScreamResult {
         try {
+            // Try ML model first
             audioThreatInterpreter?.let { interpreter ->
-                // Prepare input
                 val inputBuffer = ByteBuffer.allocateDirect(mfccFeatures.size * 4).apply {
                     order(ByteOrder.nativeOrder())
                     mfccFeatures.forEach { putFloat(it) }
                     rewind()
                 }
-                
-                // Prepare output
+
                 val outputBuffer = ByteBuffer.allocateDirect(5 * 4).apply {
                     order(ByteOrder.nativeOrder())
                 }
-                
-                // Run inference
+
                 interpreter.run(inputBuffer, outputBuffer)
-                
-                // Parse output
+
                 outputBuffer.rewind()
                 val outputs = FloatArray(5) { outputBuffer.float }
-                
+
                 // Outputs: [normal, scream, crying, yelling, silence]
                 val screamConfidence = outputs[1]
                 val cryingConfidence = outputs[2]
                 val yellingConfidence = outputs[3]
-                
-                // Combined threat confidence
+
                 val maxConfidence = maxOf(screamConfidence, cryingConfidence, yellingConfidence)
-                
+
                 return ScreamResult(
                     confidence = maxConfidence,
                     isScream = maxConfidence > SCREAM_THRESHOLD,
@@ -416,57 +483,167 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
                     }
                 )
             }
+
+            // Fallback: Simple amplitude and frequency analysis
+            var maxAmplitude = 0
+            var rmsSum = 0.0
+            for (i in 0 until length) {
+                val abs = kotlin.math.abs(buffer[i].toInt())
+                if (abs > maxAmplitude) maxAmplitude = abs
+                rmsSum += abs * abs
+            }
+
+            val rms = kotlin.math.sqrt(rmsSum / length).toFloat()
+
+            // High amplitude + high frequency components suggest scream
+            val isLoud = maxAmplitude > 20000  // Threshold for loud sound
+            val confidence = (rms / 32768f).coerceIn(0f, 1f)
+
+            return ScreamResult(
+                confidence = confidence,
+                isScream = isLoud && confidence > 0.6f,
+                type = if (isLoud) "LOUD_AUDIO" else "NORMAL"
+            )
+
         } catch (e: Exception) {
             Log.e(TAG, "Error in scream detection", e)
+            return ScreamResult(0f, false, "ERROR")
         }
-        
-        return ScreamResult(0f, false, "NORMAL")
     }
 
     /**
      * Detect voice trigger keywords
      */
-    private fun detectVoiceTrigger(buffer: ShortArray, length: Int): VoiceTriggerResult {
+    private fun detectVoiceTrigger(
+        buffer: ShortArray,
+        length: Int,
+        features: FloatArray
+    ): VoiceTriggerResult {
         try {
+            // Try ML model first (if available)
             sentimentInterpreter?.let { interpreter ->
-                // Extract features
-                val features = extractMFCC(buffer, length)
-                
-                // Prepare input
-                val inputBuffer = ByteBuffer.allocateDirect(features.size * 4).apply {
-                    order(ByteOrder.nativeOrder())
-                    features.forEach { putFloat(it) }
-                    rewind()
-                }
-                
-                // Prepare output (simplified - actual model would need proper shape)
-                val outputBuffer = ByteBuffer.allocateDirect(100 * 4).apply {
-                    order(ByteOrder.nativeOrder())
-                }
-                
-                // Run inference
-                interpreter.run(inputBuffer, outputBuffer)
-                
-                // Parse output - check for trigger keywords
-                // In production, this would use actual speech recognition
-                outputBuffer.rewind()
-                val confidence = outputBuffer.float // Simplified
-                
-                // Check if "HELP" detected
-                if (confidence > VOICE_TRIGGER_THRESHOLD) {
-                    return VoiceTriggerResult(
-                        confidence = confidence,
-                        isTriggered = true,
-                        keyword = "HELP",
-                        weight = TRIGGER_KEYWORDS["HELP"] ?: 1.0f
-                    )
+                try {
+                    val inputBuffer = ByteBuffer.allocateDirect(features.size * 4).apply {
+                        order(ByteOrder.nativeOrder())
+                        features.forEach { putFloat(it) }
+                        rewind()
+                    }
+
+                    val outputBuffer = ByteBuffer.allocateDirect(100 * 4).apply {
+                        order(ByteOrder.nativeOrder())
+                    }
+
+                    interpreter.run(inputBuffer, outputBuffer)
+
+                    outputBuffer.rewind()
+                    val confidence = outputBuffer.float
+
+                    if (confidence > VOICE_TRIGGER_THRESHOLD) {
+                        Log.d(TAG, "ML model detected voice trigger with confidence: $confidence")
+                        return VoiceTriggerResult(
+                            confidence = confidence,
+                            isTriggered = true,
+                            keyword = "HELP",
+                            weight = TRIGGER_KEYWORDS["HELP"] ?: 1.0f
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error running ML voice detection, using fallback", e)
                 }
             }
+
+            // Enhanced fallback: Detect speech patterns more reliably
+            // Calculate RMS (loudness) and Zero-Crossing Rate (speech indicator)
+            var rmsSum = 0.0
+            var zeroCrossings = 0
+            var peakAmplitude = 0
+
+            for (i in 0 until length) {
+                val sample = buffer[i].toInt()
+                val absSample = kotlin.math.abs(sample)
+
+                // Calculate RMS
+                rmsSum += sample * sample
+
+                // Count zero crossings (speech has higher ZCR than music/noise)
+                if (i > 0) {
+                    val prevSample = buffer[i - 1].toInt()
+                    if ((prevSample < 0 && sample > 0) || (prevSample > 0 && sample < 0)) {
+                        zeroCrossings++
+                    }
+                }
+
+                // Track peak
+                if (absSample > peakAmplitude) {
+                    peakAmplitude = absSample
+                }
+            }
+
+            val rms = sqrt(rmsSum / length).toFloat()
+            val zcr = zeroCrossings.toFloat() / length
+
+            // Speech characteristics:
+            // - RMS above noise floor (> 2000)
+            // - ZCR in speech range (0.05 - 0.15)
+            // - Peak amplitude indicating voice (> 8000)
+
+            val isLoudEnough = rms > 3000f  // RAISED significantly - must be loud
+            val hasVoicePattern = zcr > 0.05f && zcr < 0.20f  // Narrower range - more specific
+            val hasSpeechAmplitude = peakAmplitude > 8000  // RAISED - must be clear speech
+
+            // Detect short bursts characteristic of "HELP" (one syllable)
+            var burstCount = 0
+            var inBurst = false
+            val burstThreshold = 10000  // RAISED from 7000
+
+            for (i in 0 until length) {
+                val abs = kotlin.math.abs(buffer[i].toInt())
+                if (abs > burstThreshold) {
+                    if (!inBurst) {
+                        burstCount++
+                        inBurst = true
+                    }
+                } else if (abs < burstThreshold / 2) {
+                    inBurst = false
+                }
+            }
+
+            // "HELP" is one syllable, so we expect 1-2 bursts in the audio frame
+            val hasHelpPattern = burstCount >= 1 && burstCount <= 3  // More restrictive
+
+            // Combined confidence based on multiple factors - STRICT (prevent false positives)
+            val voiceConfidence = when {
+                isLoudEnough && hasVoicePattern && hasSpeechAmplitude && hasHelpPattern -> 0.75f
+                isLoudEnough && hasVoicePattern && hasSpeechAmplitude -> 0.60f
+                isLoudEnough && hasVoicePattern -> 0.45f
+                else -> 0.0f  // All other cases = 0 confidence
+            }
+
+            val isTriggered = voiceConfidence > 0.55f  // RAISED significantly from 0.40f
+
+            // Log detailed info when speech is detected
+            if (voiceConfidence > 0.30f) {  // Only log significant detections
+                Log.d(
+                    TAG, "Voice analysis: RMS=${rms.toInt()}, ZCR=${"%.3f".format(zcr)}, " +
+                            "Peak=$peakAmplitude, Bursts=$burstCount, Confidence=${
+                                "%.2f".format(
+                                    voiceConfidence
+                                )
+                            } ${if (isTriggered) "✅ TRIGGERED" else ""}"
+                )
+            }
+
+            return VoiceTriggerResult(
+                confidence = voiceConfidence,
+                isTriggered = isTriggered,
+                keyword = if (isTriggered) "HELP" else "",
+                weight = if (isTriggered) 1.0f else 0f
+            )
+
         } catch (e: Exception) {
             Log.e(TAG, "Error in voice trigger detection", e)
+            return VoiceTriggerResult(0f, false, "", 0f)
         }
-        
-        return VoiceTriggerResult(0f, false, "", 0f)
     }
 
     /**
@@ -488,18 +665,35 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
      * Handle voice trigger - increment counter
      */
     private fun handleVoiceTrigger(result: VoiceTriggerResult) {
+        // Only process if actually triggered
+        if (!result.isTriggered || result.keyword.isEmpty()) {
+            return
+        }
+
         val currentTime = System.currentTimeMillis()
         
         // Reset counter if timeout exceeded
-        if (currentTime - lastHelpTimestamp > HELP_TIMEOUT_MS) {
+        if (helpCount > 0 && currentTime - lastHelpTimestamp > HELP_TIMEOUT_MS) {
+            Log.d(TAG, "HELP counter reset due to timeout (${helpCount} -> 0)")
             helpCount = 0
+            _stealthState.value = _stealthState.value.copy(
+                helpCount = 0
+            )
         }
         
         // Increment counter
         helpCount++
         lastHelpTimestamp = currentTime
-        
-        Log.i(TAG, "🗣️ Voice trigger detected: \"${result.keyword}\" (${helpCount}/$HELP_COUNT_THRESHOLD)")
+
+        Log.i(
+            TAG,
+            "🗣️ Voice trigger detected: \"${result.keyword}\" (${helpCount}/$HELP_COUNT_THRESHOLD) confidence=${
+                String.format(
+                    "%.2f",
+                    result.confidence
+                )
+            }"
+        )
         
         _stealthState.value = _stealthState.value.copy(
             helpCount = helpCount,
@@ -517,9 +711,12 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
                     details = "\"HELP\" said $helpCount times"
                 )
             }
-            
-            // Reset counter
+
+            // Reset counter after triggering
             helpCount = 0
+            _stealthState.value = _stealthState.value.copy(
+                helpCount = 0
+            )
         }
     }
 
@@ -535,72 +732,114 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
             Log.w(TAG, "Already recording evidence")
             return@withContext
         }
-        
+
         val startTime = System.currentTimeMillis()
-        
+
         try {
             // Generate evidence ID
             currentEvidenceId = EvidencePackage.generateEvidenceId()
             Log.i(TAG, "📦 Evidence ID: $currentEvidenceId")
-            
+
             // Update state
             _stealthState.value = _stealthState.value.copy(
                 isEmergency = true,
                 emergencyTrigger = trigger,
                 emergencyConfidence = confidence,
-                evidenceRecording = true
+                evidenceRecording = true,
+                evidenceId = currentEvidenceId
             )
-            
-            // Start video recording (100ms)
+
+            // Start audio recording (100ms)
             delay(100)
-            startVideoRecording()
-            Log.i(TAG, "✓ Video recording started [+${System.currentTimeMillis() - startTime}ms]")
-            
-            // Start audio recording (150ms)
-            delay(50)
             startEvidenceAudioRecording()
             Log.i(TAG, "✓ Audio recording started [+${System.currentTimeMillis() - startTime}ms]")
-            
-            // Capture location (200ms)
+
+            // Start video recording only if permission is granted and trigger is VOICE_HELP
+            if (trigger == EmergencyTrigger.VOICE_HELP) {
+                // Try to start video recording (may fail on some devices)
+                try {
+                    delay(100)
+                    startEvidenceVideoRecording()
+                    Log.i(
+                        TAG,
+                        "✓ Video recording started [+${System.currentTimeMillis() - startTime}ms]"
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "Video recording failed (non-critical): ${e.message}", e)
+                    // Don't crash - video is optional, audio recording still works
+                }
+            }
+
+            // Capture location (150ms)
             delay(50)
             captureLocation()
             Log.i(TAG, "✓ Location captured [+${System.currentTimeMillis() - startTime}ms]")
-            
-            // Capture sensor data (250ms)
+
+            // Capture sensor data (200ms)
             delay(50)
             val sensorData = captureSensorData()
             Log.i(TAG, "✓ Sensor data captured [+${System.currentTimeMillis() - startTime}ms]")
-            
-            // Create evidence package (300ms)
+
+            // Create evidence package (250ms)
             delay(50)
             val evidence = createEvidencePackage(trigger, confidence, sensorData)
             Log.i(TAG, "✓ Evidence package created [+${System.currentTimeMillis() - startTime}ms]")
-            
-            // Calculate hash and prepare for blockchain (350ms)
+
+            // Calculate hash and prepare for blockchain (300ms)
             delay(50)
             val evidenceHash = evidence.calculateHash()
             val evidenceWithHash = evidence.copy(evidenceHash = evidenceHash)
             Log.i(TAG, "✓ Evidence hash: $evidenceHash [+${System.currentTimeMillis() - startTime}ms]")
-            
-            // Anchor to blockchain (async)
-            scope.launch {
-                val result = blockchainManager.anchorEvidence(evidenceWithHash)
-                if (result.success) {
-                    Log.i(TAG, "✓ Evidence anchored to blockchain")
-                    Log.i(TAG, "  TX: ${result.txHash}")
-                    Log.i(TAG, "  Block: ${result.blockHeight}")
-                }
-            }
-            
+
             val totalTime = System.currentTimeMillis() - startTime
-            Log.i(TAG, "🎯 Emergency triggered in ${totalTime}ms")
-            
+
             _stealthState.value = _stealthState.value.copy(
-                evidenceId = currentEvidenceId,
                 evidenceHash = evidenceHash,
                 emergencyResponseTime = totalTime
             )
-            
+
+            Log.i(TAG, "🎯 Emergency triggered in ${totalTime}ms")
+
+            // Call and SMS emergency contacts
+            scope.launch {
+                try {
+                    val locationString = currentLocation?.let {
+                        "${it.latitude}, ${it.longitude}"
+                    }
+
+                    val response = emergencyContactsManager.triggerEmergencyResponse(
+                        location = locationString,
+                        evidenceId = currentEvidenceId,
+                        shouldCall = true,
+                        shouldSMS = true
+                    )
+
+                    Log.i(TAG, "📞 Emergency response: Call=${response.callInitiated}, SMS=${response.smsSent}")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error calling emergency contacts", e)
+                }
+            }
+
+            // Anchor to blockchain (async - don't block)
+            scope.launch {
+                delay(50)
+                try {
+                    val result = blockchainManager.anchorEvidence(evidenceWithHash)
+                    if (result.success) {
+                        Log.i(TAG, "✓ Evidence anchored to blockchain")
+                        Log.i(TAG, "  TX: ${result.txHash}")
+                        Log.i(TAG, "  Block: ${result.blockHeight}")
+                    } else {
+                        Log.w(TAG, "⚠ Blockchain anchoring queued: ${result.error}")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error anchoring to blockchain", e)
+                }
+            }
+
+            // Show emergency overlay with evidence data
+            showEmergencyOverlay(evidenceWithHash)
+
         } catch (e: Exception) {
             Log.e(TAG, "Error triggering emergency", e)
             _stealthState.value = _stealthState.value.copy(
@@ -610,47 +849,20 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
     }
 
     /**
-     * Start video recording
-     */
-    private fun startVideoRecording() {
-        try {
-            val videoFile = File(context.filesDir, "evidence/${currentEvidenceId}_video.mp4")
-            videoFile.parentFile?.mkdirs()
-            
-            videoRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                MediaRecorder(context)
-            } else {
-                @Suppress("DEPRECATION")
-                MediaRecorder()
-            }.apply {
-                setVideoSource(MediaRecorder.VideoSource.CAMERA)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-                setVideoEncodingBitRate(2000000)
-                setVideoFrameRate(30)
-                setVideoSize(1280, 720)
-                setOutputFile(videoFile.absolutePath)
-                
-                prepare()
-                start()
-            }
-            
-            isRecording = true
-            Log.i(TAG, "Video recording started: ${videoFile.name}")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error starting video recording", e)
-        }
-    }
-
-    /**
-     * Start audio recording for evidence
+     * Start audio recording for evidence (stealth mode - audio only)
      */
     private fun startEvidenceAudioRecording() {
         try {
+            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.e(TAG, "Audio recording permission not granted")
+                return
+            }
+
             val audioFile = File(context.filesDir, "evidence/${currentEvidenceId}_audio.m4a")
             audioFile.parentFile?.mkdirs()
-            
+
             evidenceAudioRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 MediaRecorder(context)
             } else {
@@ -661,38 +873,150 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
                 setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setAudioEncodingBitRate(128000)
-                setAudioSamplingRate(16000)
+                setAudioSamplingRate(44100)
                 setOutputFile(audioFile.absolutePath)
-                
+
                 prepare()
                 start()
             }
-            
-            Log.i(TAG, "Evidence audio recording started: ${audioFile.name}")
-            
+
+            isRecording = true
+            Log.i(TAG, "✓ Evidence audio recording started: ${audioFile.name}")
+
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting audio recording", e)
+            Log.e(TAG, "Error starting evidence audio recording", e)
         }
     }
 
     /**
-     * Capture current location
+     * Start video recording with invisible 1x1 SurfaceTexture in background (audio+video)
+     */
+    private fun startEvidenceVideoRecording() {
+        if (isVideoRecording) {
+            Log.w(TAG, "Already recording video evidence")
+            return
+        }
+        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e(TAG, "Camera permission not granted")
+            return
+        }
+
+        val videoFile = File(context.filesDir, "evidence/${currentEvidenceId}_video.mp4")
+        videoFile.parentFile?.mkdirs()
+
+        try {
+            // Open camera
+            camera = Camera.open()
+            val params = camera?.parameters
+            // Use lowest resolution (for stealth, can optimize for quality as needed)
+            val supportedSizes = params?.supportedVideoSizes ?: params?.supportedPreviewSizes
+            val size = supportedSizes?.minByOrNull { it.width * it.height }
+            size?.let { params?.setPreviewSize(it.width, it.height) }
+            camera?.parameters = params
+
+            // Create 1x1 surface texture
+            val surfaceTexture = SurfaceTexture(42)
+            surfaceTexture.setDefaultBufferSize(1, 1)
+            camera?.setPreviewTexture(surfaceTexture)
+            camera?.startPreview()
+
+            videoSurface = Surface(surfaceTexture)
+
+            evidenceVideoRecorder = MediaRecorder().apply {
+                setCamera(camera)
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setVideoSource(MediaRecorder.VideoSource.CAMERA)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setVideoEncodingBitRate(1024 * 1024)
+                setVideoFrameRate(20)
+                size?.let {
+                    setVideoSize(it.width, it.height)
+                } ?: setVideoSize(640, 480) // fallback
+                setOutputFile(videoFile.absolutePath)
+                setPreviewDisplay(videoSurface)
+
+                // Add stealth: No visible UI, 1x1 pixel surface
+                prepare()
+                start()
+            }
+            isVideoRecording = true
+            Log.i(TAG, "✓ Evidence video recording started: ${videoFile.name}")
+
+        } catch (e: IOException) {
+            Log.e(TAG, "Error starting evidence video recording (IO)", e)
+            stopEvidenceVideoRecording()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting evidence video recording", e)
+            stopEvidenceVideoRecording()
+        }
+    }
+
+    /**
+     * Stop video recording and release resources
+     */
+    private fun stopEvidenceVideoRecording() {
+        try {
+            evidenceVideoRecorder?.apply {
+                stop()
+                reset()
+                release()
+            }
+            evidenceVideoRecorder = null
+
+            camera?.apply {
+                stopPreview()
+                release()
+            }
+            camera = null
+
+            videoSurface?.release()
+            videoSurface = null
+
+            isVideoRecording = false
+            Log.i(TAG, "✓ Video recording stopped")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping video recording", e)
+        }
+    }
+
+    /**
+     * Capture current location with proper permission handling
      */
     private fun captureLocation() {
         try {
-            // Get last known location (fast)
+            if (ActivityCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                )
+                != PackageManager.PERMISSION_GRANTED &&
+                ActivityCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w(TAG, "Location permission not granted")
+                return
+            }
+
+            // Try to get last known location
             currentLocation = try {
                 locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                     ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                    ?: locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
             } catch (e: SecurityException) {
-                Log.w(TAG, "Location permission not granted")
+                Log.w(TAG, "Location access denied", e)
                 null
             }
-            
+
             currentLocation?.let {
                 Log.d(TAG, "Location: ${it.latitude}, ${it.longitude} (±${it.accuracy}m)")
-            }
-            
+            } ?: Log.w(TAG, "No location available")
+
         } catch (e: Exception) {
             Log.e(TAG, "Error capturing location", e)
         }
@@ -702,7 +1026,7 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
      * Capture sensor data
      */
     private fun captureSensorData(): SensorLogs {
-        return com.shakti.ai.runanywhere.SensorLogs(
+        return SensorLogs(
             accelerometer = lastAccelerometer.toList(),
             gyroscope = lastGyroscope.toList(),
             magnetometer = lastMagnetometer.toList()
@@ -726,7 +1050,7 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
                 timestamp = System.currentTimeMillis()
             )
         }
-        
+
         val threatDetection = ThreatDetection(
             timestamp = System.currentTimeMillis(),
             audioConfidence = confidence,
@@ -736,13 +1060,17 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
             },
             location = currentLocation
         )
-        
+
+        // Provide video recording path if evidenceVideoRecorder started
+        val videoRecordingPath =
+            if (isVideoRecording) "evidence/${currentEvidenceId}_video.mp4" else null
+
         return EvidencePackage(
             evidenceId = currentEvidenceId!!,
             timestamp = System.currentTimeMillis(),
             threatDetection = threatDetection,
-            videoRecordingPath = "evidence/${currentEvidenceId}_video.mp4",
             audioRecordingPath = "evidence/${currentEvidenceId}_audio.m4a",
+            videoRecordingPath = videoRecordingPath,
             location = locationEvidence,
             sensorLogs = sensorData,
             isEncrypted = true
@@ -753,44 +1081,83 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
      * Stop recording
      */
     fun stopRecording() {
-        if (!isRecording) return
-        
+        if (!isRecording && !isVideoRecording) return
+
         try {
-            videoRecorder?.apply {
-                stop()
-                release()
-            }
-            videoRecorder = null
-            
             evidenceAudioRecorder?.apply {
                 stop()
                 release()
             }
             evidenceAudioRecorder = null
-            
+
             isRecording = false
+
+            stopEvidenceVideoRecording()
             currentEvidenceId = null
-            
+
             _stealthState.value = _stealthState.value.copy(
                 isEmergency = false,
                 evidenceRecording = false
             )
-            
-            Log.i(TAG, "Recording stopped")
-            
+
+            Log.i(TAG, "✓ Recording stopped")
+
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping recording", e)
         }
     }
 
     /**
-     * Start location updates
+     * Start location updates with proper permission handling
      */
     private fun startLocationUpdates() {
-        scope.launch(Dispatchers.IO) {
-            while (isMonitoring) {
+        locationUpdateJob?.cancel()
+
+        locationUpdateJob = scope.launch(Dispatchers.IO) {
+            try {
+                if (ActivityCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.ACCESS_FINE_LOCATION
+                    )
+                    == PackageManager.PERMISSION_GRANTED ||
+                    ActivityCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    )
+                    == PackageManager.PERMISSION_GRANTED
+                ) {
+                    // Request location updates
+                    withContext(Dispatchers.Main) {
+                        try {
+                            locationManager.requestLocationUpdates(
+                                LocationManager.GPS_PROVIDER,
+                                5000L, // 5 seconds
+                                10f, // 10 meters
+                                locationListener
+                            )
+
+                            // Also request from network provider
+                            locationManager.requestLocationUpdates(
+                                LocationManager.NETWORK_PROVIDER,
+                                5000L,
+                                10f,
+                                locationListener
+                            )
+
+                            Log.d(TAG, "✓ Location updates started")
+                        } catch (e: SecurityException) {
+                            Log.w(TAG, "Location permission denied", e)
+                        }
+                    }
+                } else {
+                    Log.w(TAG, "Location permissions not granted")
+                }
+
+                // Initial location capture
                 captureLocation()
-                delay(5000) // Update every 5 seconds
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting location updates", e)
             }
         }
     }
@@ -800,9 +1167,9 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
      */
     fun stopMonitoring() {
         Log.i(TAG, "Stopping stealth monitoring")
-        
+
         isMonitoring = false
-        
+
         // Stop audio recorder
         audioRecorder?.let {
             try {
@@ -813,17 +1180,41 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
             }
         }
         audioRecorder = null
-        
+
         // Stop any active recording
         stopRecording()
-        
+
+        // Stop location updates
+        locationUpdateJob?.cancel()
+        try {
+            locationManager.removeUpdates(locationListener)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error removing location updates", e)
+        }
+
         _stealthState.value = _stealthState.value.copy(
             isMonitoring = false,
             isEmergency = false,
             evidenceRecording = false
         )
+
+        Log.i(TAG, "✓ Stealth monitoring stopped")
+    }
+
+    /**
+     * Manually trigger emergency (called from background service or UI)
+     * This bypasses normal detection and forces emergency mode
+     */
+    fun manualTriggerEmergency(reason: String = "Manual trigger", confidence: Float = 0.95f) {
+        Log.w(TAG, "🚨 MANUAL EMERGENCY TRIGGER: $reason")
         
-        Log.i(TAG, "Stealth monitoring stopped")
+        scope.launch {
+            triggerEmergency(
+                trigger = EmergencyTrigger.SCREAM, // Use SCREAM as default
+                confidence = confidence,
+                details = reason
+            )
+        }
     }
 
     // SensorEventListener implementation
@@ -848,6 +1239,63 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
     }
 
     /**
+     * Open the custom emergency camera that automatically starts recording.
+     */
+    private fun openCameraApp() {
+        try {
+            // Launch our custom Emergency Camera Activity
+            val cameraIntent = Intent(context, EmergencyCameraActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                putExtra(EmergencyCameraActivity.EXTRA_EVIDENCE_ID, currentEvidenceId)
+            }
+            context.startActivity(cameraIntent)
+            Log.i(TAG, "✓ Emergency camera opened with auto-record")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error opening emergency camera", e)
+            // Fallback: Try to open system camera
+            try {
+                val intent = Intent(android.provider.MediaStore.ACTION_VIDEO_CAPTURE).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra(android.provider.MediaStore.EXTRA_VIDEO_QUALITY, 1)
+                }
+                context.startActivity(intent)
+                Log.i(TAG, "✓ System camera opened (fallback)")
+            } catch (e2: Exception) {
+                Log.e(TAG, "Failed to open any camera", e2)
+            }
+        }
+    }
+
+    /**
+     * Show emergency overlay with evidence data.
+     */
+    private fun showEmergencyOverlay(evidence: EvidencePackage) {
+        try {
+            val intent = Intent(context, EmergencyOverlayService::class.java).apply {
+                putExtra("evidenceId", evidence.evidenceId)
+                putExtra("timestamp", evidence.timestamp)
+                putExtra("audioRecordingPath", evidence.audioRecordingPath)
+                putExtra("videoRecordingPath", evidence.videoRecordingPath)
+                putExtra("locationLatitude", evidence.location?.latitude ?: 0.0)
+                putExtra("locationLongitude", evidence.location?.longitude ?: 0.0)
+                putExtra("locationAccuracy", evidence.location?.accuracy ?: 0.0f)
+                putExtra("locationAltitude", evidence.location?.altitude ?: 0.0)
+                putExtra("threatType", evidence.threatDetection.threatType.name)
+                putExtra("threatConfidence", evidence.threatDetection.audioConfidence)
+                putExtra("evidenceHash", evidence.evidenceHash)
+                putExtra("isEncrypted", evidence.isEncrypted)
+                // Pass additional fields as needed
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startService(intent)
+            Log.i(TAG, "🆘 Emergency overlay shown with evidenceId ${evidence.evidenceId}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error showing emergency overlay", e)
+        }
+    }
+
+    /**
      * Cleanup
      */
     fun cleanup() {
@@ -856,6 +1304,7 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
         audioThreatInterpreter?.close()
         sentimentInterpreter?.close()
         scope.cancel()
+        stopEvidenceVideoRecording()
     }
 }
 
