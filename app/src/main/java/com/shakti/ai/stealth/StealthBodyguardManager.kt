@@ -860,8 +860,16 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
                 return
             }
 
-            val audioFile = File(context.filesDir, "evidence/${currentEvidenceId}_audio.m4a")
-            audioFile.parentFile?.mkdirs()
+            // Save to external storage (accessible location)
+            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS
+            )
+            val evidenceDir = File(downloadsDir, "ShaktiAI_Evidence")
+            evidenceDir.mkdirs()
+
+            val audioFile = File(evidenceDir, "${currentEvidenceId}_audio.m4a")
+
+            Log.i(TAG, "Audio file path: ${audioFile.absolutePath}")
 
             evidenceAudioRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 MediaRecorder(context)
@@ -881,7 +889,7 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
             }
 
             isRecording = true
-            Log.i(TAG, "✓ Evidence audio recording started: ${audioFile.name}")
+            Log.i(TAG, "✓ Evidence audio recording started: ${audioFile.absolutePath}")
 
         } catch (e: Exception) {
             Log.e(TAG, "Error starting evidence audio recording", e)
@@ -903,8 +911,16 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
             return
         }
 
-        val videoFile = File(context.filesDir, "evidence/${currentEvidenceId}_video.mp4")
-        videoFile.parentFile?.mkdirs()
+        // Save to external storage (accessible location)
+        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOWNLOADS
+        )
+        val evidenceDir = File(downloadsDir, "ShaktiAI_Evidence")
+        evidenceDir.mkdirs()
+
+        val videoFile = File(evidenceDir, "${currentEvidenceId}_video.mp4")
+
+        Log.i(TAG, "Video file path: ${videoFile.absolutePath}")
 
         try {
             // Open camera
@@ -944,7 +960,7 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
                 start()
             }
             isVideoRecording = true
-            Log.i(TAG, "✓ Evidence video recording started: ${videoFile.name}")
+            Log.i(TAG, "✓ Evidence video recording started: ${videoFile.absolutePath}")
 
         } catch (e: IOException) {
             Log.e(TAG, "Error starting evidence video recording (IO)", e)
@@ -1061,16 +1077,22 @@ class StealthBodyguardManager(private val context: Context) : SensorEventListene
             location = currentLocation
         )
 
-        // Provide video recording path if evidenceVideoRecorder started
-        val videoRecordingPath =
-            if (isVideoRecording) "evidence/${currentEvidenceId}_video.mp4" else null
+        // External storage paths (accessible to user)
+        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOWNLOADS
+        )
+        val audioPath =
+            File(downloadsDir, "ShaktiAI_Evidence/${currentEvidenceId}_audio.m4a").absolutePath
+        val videoPath = if (isVideoRecording) {
+            File(downloadsDir, "ShaktiAI_Evidence/${currentEvidenceId}_video.mp4").absolutePath
+        } else null
 
         return EvidencePackage(
             evidenceId = currentEvidenceId!!,
             timestamp = System.currentTimeMillis(),
             threatDetection = threatDetection,
-            audioRecordingPath = "evidence/${currentEvidenceId}_audio.m4a",
-            videoRecordingPath = videoRecordingPath,
+            audioRecordingPath = audioPath,
+            videoRecordingPath = videoPath,
             location = locationEvidence,
             sensorLogs = sensorData,
             isEncrypted = true
